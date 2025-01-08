@@ -9,6 +9,7 @@ import { LikesView } from './components/LikesView';
 import { supabase } from './lib/supabase';
 import { Toaster } from 'react-hot-toast';
 import toast from 'react-hot-toast';
+import confetti from 'canvas-confetti';
 import type { User, SearchFilters as SearchFiltersType } from './types';
 
 function App() {
@@ -27,6 +28,7 @@ function App() {
 
   const [filteredUsers, setFilteredUsers] = useState<User[]>([]);
   const [likedUsers, setLikedUsers] = useState<string[]>([]);
+  const [matchedUsers, setMatchedUsers] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -45,7 +47,7 @@ function App() {
 
   useEffect(() => {
     if (user) {
-      fetchLikedUsers();
+      fetchLikedAndMatchedUsers();
     }
   }, [user]);
 
@@ -93,6 +95,7 @@ function App() {
 
         let filtered = data.filter(profile => {
           if (profile.id === user?.id) return false;
+          if (matchedUsers.includes(profile.id)) return false;
           if (profile.age < filters.ageRange.min || profile.age > filters.ageRange.max) return false;
           if (profile.height < filters.heightRange.min || profile.height > filters.heightRange.max) return false;
           if (filters.interests.length > 0 && !filters.interests.some(interest => profile.interests?.includes(interest))) return false;
@@ -127,22 +130,64 @@ function App() {
     };
 
     fetchProfiles();
-  }, [filters, user]);
+  }, [filters, user, matchedUsers]);
 
-  const fetchLikedUsers = async () => {
+  const fetchLikedAndMatchedUsers = async () => {
     if (!user) return;
 
     try {
-      const { data, error } = await supabase
+      // Fetch users you've liked
+      const { data: likes, error: likesError } = await supabase
         .from('likes')
         .select('to_user_id')
         .eq('from_user_id', user.id);
 
-      if (error) throw error;
-      setLikedUsers(data.map(like => like.to_user_id));
+      if (likesError) throw likesError;
+      setLikedUsers(likes.map(like => like.to_user_id));
+
+      // Fetch mutual matches
+      const { data: matches, error: matchesError } = await supabase
+        .from('likes')
+        .select('from_user_id')
+        .eq('to_user_id', user.id)
+        .in('from_user_id', likes.map(like => like.to_user_id));
+
+      if (matchesError) throw matchesError;
+      setMatchedUsers(matches.map(match => match.from_user_id));
     } catch (error) {
-      console.error('Error fetching likes:', error);
+      console.error('Error fetching likes and matches:', error);
     }
+  };
+
+  const triggerMatchAnimation = () => {
+    const duration = 3000;
+    const animationEnd = Date.now() + duration;
+    const defaults = { startVelocity: 30, spread: 360, ticks: 60, zIndex: 0 };
+
+    const randomInRange = (min: number, max: number) => {
+      return Math.random() * (max - min) + min;
+    };
+
+    const interval: any = setInterval(() => {
+      const timeLeft = animationEnd - Date.now();
+
+      if (timeLeft <= 0) {
+        return clearInterval(interval);
+      }
+
+      const particleCount = 50 * (timeLeft / duration);
+
+      confetti({
+        ...defaults,
+        particleCount,
+        origin: { x: randomInRange(0.1, 0.3), y: Math.random() - 0.2 }
+      });
+      confetti({
+        ...defaults,
+        particleCount,
+        origin: { x: randomInRange(0.7, 0.9), y: Math.random() - 0.2 }
+      });
+    }, 250);
   };
 
   const handleLike = async (userId: string) => {
@@ -186,7 +231,17 @@ function App() {
       }
 
       if (mutualLike) {
-        toast.success("It's a match! 🎉");
+        triggerMatchAnimation();
+        toast.success("It's a match! 🎉", {
+          duration: 5000,
+          style: {
+            background: 'linear-gradient(to right, #8B5CF6, #EC4899)',
+            color: 'white',
+            fontSize: '1.2em',
+            padding: '16px 24px',
+          },
+          icon: '💝'
+        });
         
         await Promise.all([
           supabase.from('notifications').insert({
@@ -200,6 +255,10 @@ function App() {
             from_user_id: user.id,
           }),
         ]);
+
+        // Add to matched users and remove from discovery
+        setMatchedUsers(prev => [...prev, userId]);
+        setFilteredUsers(prev => prev.filter(profile => profile.id !== userId));
       } else {
         toast.success('Profile liked!');
         

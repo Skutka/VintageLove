@@ -16,6 +16,7 @@ interface ChatPartner {
   id: string;
   name: string;
   profile_image: string;
+  last_message_time?: string;
 }
 
 export function MessagesView({ user }: { user: any }) {
@@ -24,11 +25,11 @@ export function MessagesView({ user }: { user: any }) {
   const [selectedPartner, setSelectedPartner] = useState<ChatPartner | null>(null);
   const [newMessage, setNewMessage] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isSending, setIsSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const fetchMatches = async () => {
     try {
-      // Get mutual likes
       const { data: likes, error: likesError } = await supabase
         .from('likes')
         .select('to_user_id')
@@ -36,7 +37,6 @@ export function MessagesView({ user }: { user: any }) {
 
       if (likesError) throw likesError;
 
-      // Get users who liked the current user
       const { data: likedBy, error: likedByError } = await supabase
         .from('likes')
         .select('from_user_id')
@@ -44,19 +44,49 @@ export function MessagesView({ user }: { user: any }) {
 
       if (likedByError) throw likedByError;
 
-      // Find mutual matches
       const mutualIds = likes
         .map(like => like.to_user_id)
         .filter(id => likedBy.some(like => like.from_user_id === id));
 
       if (mutualIds.length > 0) {
+        const { data: lastMessages, error: messagesError } = await supabase
+          .from('messages')
+          .select('sender_id, receiver_id, created_at')
+          .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
+          .in('sender_id', [user.id, ...mutualIds])
+          .in('receiver_id', [user.id, ...mutualIds])
+          .order('created_at', { ascending: false });
+
+        if (messagesError) throw messagesError;
+
         const { data: profiles, error: profilesError } = await supabase
           .from('profiles')
           .select('id, name, profile_image')
           .in('id', mutualIds);
 
         if (profilesError) throw profilesError;
-        setMatches(profiles);
+
+        const matchesWithLastMessage = profiles.map(profile => {
+          const lastMessage = lastMessages?.find(msg => 
+            msg.sender_id === profile.id || msg.receiver_id === profile.id
+          );
+          return {
+            ...profile,
+            last_message_time: lastMessage?.created_at
+          };
+        });
+
+        const sortedMatches = matchesWithLastMessage.sort((a, b) => {
+          if (!a.last_message_time) return 1;
+          if (!b.last_message_time) return -1;
+          return new Date(b.last_message_time).getTime() - new Date(a.last_message_time).getTime();
+        });
+
+        setMatches(sortedMatches);
+
+        if (!selectedPartner && sortedMatches.length > 0) {
+          setSelectedPartner(sortedMatches[0]);
+        }
       }
     } catch (error) {
       console.error('Error fetching matches:', error);
@@ -76,7 +106,6 @@ export function MessagesView({ user }: { user: any }) {
       if (error) throw error;
       setMessages(data || []);
       
-      // Mark received messages as read
       const unreadMessages = data?.filter(msg => 
         msg.receiver_id === user.id && !msg.read
       ) || [];
@@ -97,33 +126,59 @@ export function MessagesView({ user }: { user: any }) {
     }
   };
 
-  const handleRefresh = async () => {
-    if (selectedPartner) {
-      await fetchMessages(selectedPartner.id);
-      toast.success('Messages refreshed');
-    }
-  };
-
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedPartner || !newMessage.trim()) return;
+    if (!selectedPartner || !newMessage.trim() || isSending) return;
+
+    const messageText = newMessage.trim();
+    setNewMessage(''); // Clear input immediately for better UX
 
     try {
-      const { error } = await supabase
+      setIsSending(true);
+
+      const tempId = `temp-${Date.now()}`;
+      const tempMessage = {
+        id: tempId,
+        sender_id: user.id,
+        receiver_id: selectedPartner.id,
+        content: messageText,
+        created_at: new Date().toISOString(),
+        read: false
+      };
+
+      // Optimistically add message
+      setMessages(prev => [...prev, tempMessage]);
+
+      const { data, error } = await supabase
         .from('messages')
         .insert({
           sender_id: user.id,
           receiver_id: selectedPartner.id,
-          content: newMessage.trim()
-        });
+          content: messageText
+        })
+        .select()
+        .single();
 
       if (error) throw error;
-      setNewMessage('');
-      // Refresh messages after sending
-      await fetchMessages(selectedPartner.id);
+
+      // Replace temp message with real one
+      setMessages(prev => prev.map(msg => 
+        msg.id === tempId ? data : msg
+      ));
+
+      // Scroll to bottom
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+
+      // Refresh matches to update last message time
+      fetchMatches();
     } catch (error) {
       console.error('Error sending message:', error);
       toast.error('Failed to send message');
+      // Remove the optimistic message and restore the text
+      setMessages(prev => prev.filter(msg => msg.id !== `temp-${Date.now()}`));
+      setNewMessage(messageText);
+    } finally {
+      setIsSending(false);
     }
   };
 
@@ -131,7 +186,6 @@ export function MessagesView({ user }: { user: any }) {
     if (user) {
       fetchMatches();
 
-      // Set up real-time subscription for messages
       const messagesChannel = supabase.channel('messages')
         .on(
           'postgres_changes',
@@ -144,6 +198,7 @@ export function MessagesView({ user }: { user: any }) {
           (payload) => {
             if (selectedPartner && payload.new.sender_id === selectedPartner.id) {
               setMessages(prev => [...prev, payload.new as Message]);
+              fetchMatches();
             }
           }
         )
@@ -158,34 +213,19 @@ export function MessagesView({ user }: { user: any }) {
   useEffect(() => {
     if (selectedPartner) {
       fetchMessages(selectedPartner.id);
-
-      // Set up real-time subscription for the current chat
-      const chatChannel = supabase.channel(`chat:${selectedPartner.id}`)
-        .on(
-          'postgres_changes',
-          {
-            event: '*',
-            schema: 'public',
-            table: 'messages',
-            filter: `or(and(sender_id.eq.${user.id},receiver_id.eq.${selectedPartner.id}),and(sender_id.eq.${selectedPartner.id},receiver_id.eq.${user.id}))`,
-          },
-          (payload) => {
-            if (payload.eventType === 'INSERT') {
-              setMessages(prev => [...prev, payload.new as Message]);
-            }
-          }
-        )
-        .subscribe();
-
-      return () => {
-        supabase.removeChannel(chatChannel);
-      };
     }
   }, [selectedPartner]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  const handleRefresh = async () => {
+    if (selectedPartner) {
+      await fetchMessages(selectedPartner.id);
+      toast.success('Messages refreshed');
+    }
+  };
 
   return (
     <div className="flex h-[calc(100vh-200px)]">
@@ -211,6 +251,11 @@ export function MessagesView({ user }: { user: any }) {
                 <span className="font-medium">{match.name}</span>
               </button>
             ))}
+            {matches.length === 0 && (
+              <p className="text-center text-gray-500 py-4">
+                No matches yet. Start liking profiles to find matches!
+              </p>
+            )}
           </div>
         </div>
       </div>
@@ -263,13 +308,14 @@ export function MessagesView({ user }: { user: any }) {
                   onChange={(e) => setNewMessage(e.target.value)}
                   placeholder="Type a message..."
                   className="flex-1 p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  disabled={isSending}
                 />
                 <button
                   type="submit"
-                  disabled={!newMessage.trim()}
+                  disabled={!newMessage.trim() || isSending}
                   className="bg-purple-600 text-white p-2 rounded-lg hover:bg-purple-700 disabled:opacity-50"
                 >
-                  <Send className="h-5 w-5" />
+                  <Send className={`h-5 w-5 ${isSending ? 'opacity-50' : ''}`} />
                 </button>
               </div>
             </form>

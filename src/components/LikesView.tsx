@@ -94,13 +94,14 @@ export function LikesView({ user }: LikesViewProps) {
       {mutualMatches.length > 0 && (
         <div>
           <h2 className="text-2xl font-bold mb-4">Mutual Matches 🎉</h2>
-          <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {mutualMatches.map(profile => (
               <ProfileCard
                 key={profile.id}
                 user={profile}
                 currentUser={user}
                 onLike={() => {}}
+                isLikedByUser={true}
               />
             ))}
           </div>
@@ -110,13 +111,14 @@ export function LikesView({ user }: LikesViewProps) {
       <div>
         <h2 className="text-2xl font-bold mb-4">Profiles You've Liked</h2>
         {likedProfiles.length > 0 ? (
-          <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {likedProfiles.map(profile => (
               <ProfileCard
                 key={profile.id}
                 user={profile}
                 currentUser={user}
                 onLike={() => {}}
+                isLikedByUser={true}
               />
             ))}
           </div>

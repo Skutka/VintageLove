@@ -10,7 +10,7 @@ interface SearchFiltersProps {
 export function SearchFilters({ filters, onFilterChange }: SearchFiltersProps) {
   const handleAgeChange = (type: 'min' | 'max', value: string) => {
     const num = parseInt(value) || 18;
-    const newValue = Math.max(18, Math.min(100, num));
+    const newValue = Math.max(18, Math.min(120, num));
     
     const newRange = type === 'min' 
       ? { min: newValue, max: Math.max(filters.ageRange.max, newValue) }
@@ -72,7 +72,7 @@ export function SearchFilters({ filters, onFilterChange }: SearchFiltersProps) {
               onChange={(e) => handleAgeChange('min', e.target.value)}
               className="w-20 px-3 py-2 border rounded-md"
               min="18"
-              max="100"
+              max="120"
             />
             <span>to</span>
             <input
@@ -81,7 +81,7 @@ export function SearchFilters({ filters, onFilterChange }: SearchFiltersProps) {
               onChange={(e) => handleAgeChange('max', e.target.value)}
               className="w-20 px-3 py-2 border rounded-md"
               min="18"
-              max="100"
+              max="120"
             />
           </div>
         </div>
@@ -137,7 +137,7 @@ export function SearchFilters({ filters, onFilterChange }: SearchFiltersProps) {
             Hair Color
           </label>
           <div className="flex flex-wrap gap-2">
-            {['Black', 'Brown', 'Blonde', 'Red', 'Grey'].map((color) => (
+            {['Black', 'Brown', 'Blonde', 'Red', 'Grey', 'Silver', 'White'].map((color) => (
               <button
                 key={color}
                 onClick={() => toggleHairColor(color)}
@@ -194,28 +194,30 @@ export function SearchFilters({ filters, onFilterChange }: SearchFiltersProps) {
             Interests
           </label>
           <div className="flex flex-wrap gap-2">
-            {['Sports', 'Music', 'Art', 'Travel', 'Food', 'Movies', 'Tech', 'Photography'].map(
-              (interest) => (
-                <button
-                  key={interest}
-                  onClick={() =>
-                    onFilterChange({
-                      ...filters,
-                      interests: filters.interests.includes(interest)
-                        ? filters.interests.filter((i) => i !== interest)
-                        : [...filters.interests, interest],
-                    })
-                  }
-                  className={`px-3 py-1 rounded-full text-sm ${
-                    filters.interests.includes(interest)
-                      ? 'bg-purple-600 text-white'
-                      : 'bg-gray-100 text-gray-600'
-                  }`}
-                >
-                  {interest}
-                </button>
-              )
-            )}
+            {[
+              'Sports', 'Music', 'Art', 'Travel', 'Food', 'Movies', 'Tech', 'Photography',
+              'Literature', 'Classical Music', 'Gardening', 'Wine Tasting', 'History',
+              'Languages', 'Dance', 'Cooking', 'Nature', 'Jazz', 'Tea'
+            ].map((interest) => (
+              <button
+                key={interest}
+                onClick={() =>
+                  onFilterChange({
+                    ...filters,
+                    interests: filters.interests.includes(interest)
+                      ? filters.interests.filter((i) => i !== interest)
+                      : [...filters.interests, interest],
+                  })
+                }
+                className={`px-3 py-1 rounded-full text-sm ${
+                  filters.interests.includes(interest)
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-gray-100 text-gray-600'
+                }`}
+              >
+                {interest}
+              </button>
+            ))}
           </div>
         </div>
       </div>

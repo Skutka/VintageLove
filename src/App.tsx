@@ -8,6 +8,7 @@ import { MessagesView } from './components/MessagesView';
 import { LikesView } from './components/LikesView';
 import { supabase } from './lib/supabase';
 import { Toaster } from 'react-hot-toast';
+import toast from 'react-hot-toast';
 import type { User, SearchFilters as SearchFiltersType } from './types';
 
 function App() {
@@ -15,7 +16,7 @@ function App() {
   const [user, setUser] = useState(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [filters, setFilters] = useState<SearchFiltersType>({
-    ageRange: { min: 18, max: 50 },
+    ageRange: { min: 18, max: 120 },
     gender: [],
     location: '',
     heightRange: { min: 150, max: 200 },
@@ -25,6 +26,7 @@ function App() {
   });
 
   const [filteredUsers, setFilteredUsers] = useState<User[]>([]);
+  const [likedUsers, setLikedUsers] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -40,6 +42,12 @@ function App() {
 
     return () => subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (user) {
+      fetchLikedUsers();
+    }
+  }, [user]);
 
   useEffect(() => {
     const hash = window.location.hash.slice(1) || 'discover';
@@ -58,13 +66,11 @@ function App() {
     const fetchProfiles = async () => {
       try {
         setLoading(true);
-        
-        // Base query to get all profiles without visibility filter
         let query = supabase
           .from('profiles')
-          .select('*');
+          .select('*')
+          .eq('profile_visible', true);
 
-        // Apply filters
         if (filters.gender.length > 0) {
           query = query.in('gender', filters.gender);
         }
@@ -81,52 +87,40 @@ function App() {
           query = query.in('eye_color', filters.eyeColor);
         }
 
-        // Execute query
         const { data, error } = await query;
 
-        if (error) {
-          console.error('Error fetching profiles:', error);
-          return;
-        }
+        if (error) throw error;
 
-        if (!data) {
-          setFilteredUsers([]);
-          return;
-        }
-
-        // Filter results based on age and height ranges
         let filtered = data.filter(profile => {
-          if (!profile.age || !profile.height) return false;
           if (profile.id === user?.id) return false;
           if (profile.age < filters.ageRange.min || profile.age > filters.ageRange.max) return false;
           if (profile.height < filters.heightRange.min || profile.height > filters.heightRange.max) return false;
-          if (filters.interests.length > 0 && !profile.interests?.some(interest => filters.interests.includes(interest))) return false;
+          if (filters.interests.length > 0 && !filters.interests.some(interest => profile.interests?.includes(interest))) return false;
           return true;
         });
 
-        // Transform to User type
         const transformedUsers: User[] = filtered.map(profile => ({
           id: profile.id,
-          name: profile.name || '',
-          age: profile.age || 0,
-          gender: profile.gender as 'male' | 'female',
+          name: profile.name,
+          age: profile.age,
+          gender: profile.gender,
           location: {
-            city: profile.city || '',
-            country: profile.country || '',
+            city: profile.city,
+            country: profile.country,
           },
-          height: profile.height || 0,
-          hairColor: profile.hair_color || '',
-          eyeColor: profile.eye_color || '',
+          height: profile.height,
+          hairColor: profile.hair_color,
+          eyeColor: profile.eye_color,
           interests: profile.interests || [],
-          bio: profile.bio || '',
+          bio: profile.bio,
           profileVisible: profile.profile_visible,
-          profileImage: profile.profile_image || '',
+          profileImage: profile.profile_image,
           profilePhotos: profile.profile_photos || [],
         }));
 
         setFilteredUsers(transformedUsers);
       } catch (error) {
-        console.error('Error:', error);
+        console.error('Error fetching profiles:', error);
       } finally {
         setLoading(false);
       }
@@ -135,6 +129,22 @@ function App() {
     fetchProfiles();
   }, [filters, user]);
 
+  const fetchLikedUsers = async () => {
+    if (!user) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('likes')
+        .select('to_user_id')
+        .eq('from_user_id', user.id);
+
+      if (error) throw error;
+      setLikedUsers(data.map(like => like.to_user_id));
+    } catch (error) {
+      console.error('Error fetching likes:', error);
+    }
+  };
+
   const handleLike = async (userId: string) => {
     if (!user) {
       setIsAuthModalOpen(true);
@@ -142,6 +152,11 @@ function App() {
     }
 
     try {
+      if (likedUsers.includes(userId)) {
+        toast.error('You already liked this profile');
+        return;
+      }
+
       const { error } = await supabase
         .from('likes')
         .insert({
@@ -149,18 +164,30 @@ function App() {
           to_user_id: userId,
         });
 
-      if (error) throw error;
+      if (error) {
+        if (error.code === '23505') {
+          toast.error('You already liked this profile');
+          return;
+        }
+        throw error;
+      }
 
-      // Check for mutual like
-      const { data: mutualLike } = await supabase
+      setLikedUsers(prev => [...prev, userId]);
+
+      const { data: mutualLike, error: mutualError } = await supabase
         .from('likes')
         .select('*')
         .eq('from_user_id', userId)
         .eq('to_user_id', user.id)
         .single();
 
+      if (mutualError && mutualError.code !== 'PGRST116') {
+        throw mutualError;
+      }
+
       if (mutualLike) {
-        // Create notifications for both users
+        toast.success("It's a match! 🎉");
+        
         await Promise.all([
           supabase.from('notifications').insert({
             user_id: user.id,
@@ -174,7 +201,8 @@ function App() {
           }),
         ]);
       } else {
-        // Create notification for liked user
+        toast.success('Profile liked!');
+        
         await supabase.from('notifications').insert({
           user_id: userId,
           type: 'like',
@@ -183,6 +211,7 @@ function App() {
       }
     } catch (error) {
       console.error('Error:', error);
+      toast.error('Failed to like profile');
     }
   };
 
@@ -216,13 +245,14 @@ function App() {
                   <p className="text-gray-500 mt-4">Loading profiles...</p>
                 </div>
               ) : filteredUsers.length > 0 ? (
-                <div className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {filteredUsers.map((profile) => (
                     <ProfileCard
                       key={profile.id}
                       user={profile}
                       currentUser={user}
                       onLike={handleLike}
+                      isLikedByUser={likedUsers.includes(profile.id)}
                     />
                   ))}
                 </div>

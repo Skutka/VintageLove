@@ -2,41 +2,18 @@ import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { SearchFilters } from './components/SearchFilters';
 import { ProfileCard } from './components/ProfileCard';
+import { AuthModal } from './components/AuthModal';
+import { ProfileEditor } from './components/ProfileEditor';
+import { MessagesView } from './components/MessagesView';
+import { LikesView } from './components/LikesView';
+import { supabase } from './lib/supabase';
+import { Toaster } from 'react-hot-toast';
 import type { User, SearchFilters as SearchFiltersType } from './types';
-
-const MOCK_USERS: User[] = [
-  {
-    id: '1',
-    name: 'Sarah Johnson',
-    age: 28,
-    gender: 'female',
-    location: { city: 'New York', country: 'USA' },
-    height: 168,
-    hairColor: 'Brown',
-    eyeColor: 'Blue',
-    interests: ['Travel', 'Photography', 'Yoga'],
-    bio: 'Adventure seeker and coffee enthusiast. Looking for someone to explore the world with.',
-    profileVisible: true,
-    profileImage: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80',
-  },
-  {
-    id: '2',
-    name: 'Michael Chen',
-    age: 32,
-    gender: 'male',
-    location: { city: 'San Francisco', country: 'USA' },
-    height: 180,
-    hairColor: 'Black',
-    eyeColor: 'Brown',
-    interests: ['Tech', 'Hiking', 'Cooking'],
-    bio: 'Software engineer by day, amateur chef by night. Looking for someone to share meals and adventures with.',
-    profileVisible: true,
-    profileImage: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80',
-  },
-];
 
 function App() {
   const [currentPage, setCurrentPage] = useState('discover');
+  const [user, setUser] = useState(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [filters, setFilters] = useState<SearchFiltersType>({
     ageRange: { min: 18, max: 50 },
     gender: [],
@@ -47,55 +24,184 @@ function App() {
     interests: [],
   });
 
-  const [filteredUsers, setFilteredUsers] = useState(MOCK_USERS);
+  const [filteredUsers, setFilteredUsers] = useState<User[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   useEffect(() => {
     const hash = window.location.hash.slice(1) || 'discover';
     setCurrentPage(hash);
-  }, []);
 
-  useEffect(() => {
-    window.addEventListener('hashchange', () => {
+    const handleHashChange = () => {
       const hash = window.location.hash.slice(1) || 'discover';
       setCurrentPage(hash);
-    });
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
   useEffect(() => {
-    const filtered = MOCK_USERS.filter(user => {
-      // Age filter
-      if (user.age < filters.ageRange.min || user.age > filters.ageRange.max) return false;
-      
-      // Gender filter
-      if (filters.gender.length > 0 && !filters.gender.includes(user.gender)) return false;
-      
-      // Location filter
-      if (filters.location && !user.location.city.toLowerCase().includes(filters.location.toLowerCase()) && 
-          !user.location.country.toLowerCase().includes(filters.location.toLowerCase())) return false;
-      
-      // Height filter
-      if (user.height < filters.heightRange.min || user.height > filters.heightRange.max) return false;
-      
-      // Hair color filter
-      if (filters.hairColor.length > 0 && !filters.hairColor.includes(user.hairColor)) return false;
-      
-      // Eye color filter
-      if (filters.eyeColor.length > 0 && !filters.eyeColor.includes(user.eyeColor)) return false;
-      
-      // Interests filter
-      if (filters.interests.length > 0 && !filters.interests.some(interest => user.interests.includes(interest))) return false;
-      
-      return true;
-    });
-    setFilteredUsers(filtered);
-  }, [filters]);
+    const fetchProfiles = async () => {
+      try {
+        setLoading(true);
+        
+        // Base query to get all profiles without visibility filter
+        let query = supabase
+          .from('profiles')
+          .select('*');
 
-  const handleLike = (userId: string) => {
-    console.log('Liked user:', userId);
-    // Implement like functionality
+        // Apply filters
+        if (filters.gender.length > 0) {
+          query = query.in('gender', filters.gender);
+        }
+
+        if (filters.location) {
+          query = query.or(`city.ilike.%${filters.location}%,country.ilike.%${filters.location}%`);
+        }
+
+        if (filters.hairColor.length > 0) {
+          query = query.in('hair_color', filters.hairColor);
+        }
+
+        if (filters.eyeColor.length > 0) {
+          query = query.in('eye_color', filters.eyeColor);
+        }
+
+        // Execute query
+        const { data, error } = await query;
+
+        if (error) {
+          console.error('Error fetching profiles:', error);
+          return;
+        }
+
+        if (!data) {
+          setFilteredUsers([]);
+          return;
+        }
+
+        // Filter results based on age and height ranges
+        let filtered = data.filter(profile => {
+          if (!profile.age || !profile.height) return false;
+          if (profile.id === user?.id) return false;
+          if (profile.age < filters.ageRange.min || profile.age > filters.ageRange.max) return false;
+          if (profile.height < filters.heightRange.min || profile.height > filters.heightRange.max) return false;
+          if (filters.interests.length > 0 && !profile.interests?.some(interest => filters.interests.includes(interest))) return false;
+          return true;
+        });
+
+        // Transform to User type
+        const transformedUsers: User[] = filtered.map(profile => ({
+          id: profile.id,
+          name: profile.name || '',
+          age: profile.age || 0,
+          gender: profile.gender as 'male' | 'female',
+          location: {
+            city: profile.city || '',
+            country: profile.country || '',
+          },
+          height: profile.height || 0,
+          hairColor: profile.hair_color || '',
+          eyeColor: profile.eye_color || '',
+          interests: profile.interests || [],
+          bio: profile.bio || '',
+          profileVisible: profile.profile_visible,
+          profileImage: profile.profile_image || '',
+          profilePhotos: profile.profile_photos || [],
+        }));
+
+        setFilteredUsers(transformedUsers);
+      } catch (error) {
+        console.error('Error:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchProfiles();
+  }, [filters, user]);
+
+  const handleLike = async (userId: string) => {
+    if (!user) {
+      setIsAuthModalOpen(true);
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from('likes')
+        .insert({
+          from_user_id: user.id,
+          to_user_id: userId,
+        });
+
+      if (error) throw error;
+
+      // Check for mutual like
+      const { data: mutualLike } = await supabase
+        .from('likes')
+        .select('*')
+        .eq('from_user_id', userId)
+        .eq('to_user_id', user.id)
+        .single();
+
+      if (mutualLike) {
+        // Create notifications for both users
+        await Promise.all([
+          supabase.from('notifications').insert({
+            user_id: user.id,
+            type: 'match',
+            from_user_id: userId,
+          }),
+          supabase.from('notifications').insert({
+            user_id: userId,
+            type: 'match',
+            from_user_id: user.id,
+          }),
+        ]);
+      } else {
+        // Create notification for liked user
+        await supabase.from('notifications').insert({
+          user_id: userId,
+          type: 'like',
+          from_user_id: user.id,
+        });
+      }
+    } catch (error) {
+      console.error('Error:', error);
+    }
   };
 
   const renderContent = () => {
+    if (!user && currentPage !== 'discover') {
+      return (
+        <div className="text-center py-12">
+          <h2 className="text-2xl font-bold text-gray-700">Please Sign In</h2>
+          <p className="text-gray-500 mt-2">You need to be signed in to access this feature.</p>
+          <button
+            onClick={() => setIsAuthModalOpen(true)}
+            className="mt-4 bg-gradient-to-r from-purple-600 to-pink-500 text-white px-6 py-2 rounded-full"
+          >
+            Sign In
+          </button>
+        </div>
+      );
+    }
+
     switch(currentPage) {
       case 'discover':
         return (
@@ -103,11 +209,23 @@ function App() {
             <div className="md:col-span-1">
               <SearchFilters filters={filters} onFilterChange={setFilters} />
             </div>
-            <div className="md:col-span-2 space-y-6">
-              {filteredUsers.length > 0 ? (
-                filteredUsers.map((user) => (
-                  <ProfileCard key={user.id} user={user} onLike={handleLike} />
-                ))
+            <div className="md:col-span-2">
+              {loading ? (
+                <div className="text-center py-12">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600 mx-auto"></div>
+                  <p className="text-gray-500 mt-4">Loading profiles...</p>
+                </div>
+              ) : filteredUsers.length > 0 ? (
+                <div className="space-y-6">
+                  {filteredUsers.map((profile) => (
+                    <ProfileCard
+                      key={profile.id}
+                      user={profile}
+                      currentUser={user}
+                      onLike={handleLike}
+                    />
+                  ))}
+                </div>
               ) : (
                 <div className="text-center py-12">
                   <p className="text-gray-500">No matches found with current filters</p>
@@ -116,27 +234,12 @@ function App() {
             </div>
           </div>
         );
-      case 'matches':
-        return (
-          <div className="text-center py-12">
-            <h2 className="text-2xl font-bold text-gray-700">Your Matches</h2>
-            <p className="text-gray-500 mt-2">Coming soon!</p>
-          </div>
-        );
+      case 'likes':
+        return <LikesView user={user} />;
       case 'messages':
-        return (
-          <div className="text-center py-12">
-            <h2 className="text-2xl font-bold text-gray-700">Messages</h2>
-            <p className="text-gray-500 mt-2">Coming soon!</p>
-          </div>
-        );
+        return <MessagesView user={user} />;
       case 'profile':
-        return (
-          <div className="text-center py-12">
-            <h2 className="text-2xl font-bold text-gray-700">Your Profile</h2>
-            <p className="text-gray-500 mt-2">Coming soon!</p>
-          </div>
-        );
+        return <ProfileEditor user={user} />;
       default:
         return null;
     }
@@ -144,10 +247,15 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-100">
-      <Header />
+      <Header user={user} onOpenAuth={() => setIsAuthModalOpen(true)} />
       <main className="container mx-auto px-4 py-8">
         {renderContent()}
       </main>
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+      />
+      <Toaster position="top-center" />
     </div>
   );
 }

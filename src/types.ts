@@ -14,6 +14,7 @@ export interface User {
   bio: string;
   profileVisible: boolean;
   profileImage: string;
+  profilePhotos?: string[];
 }
 
 export interface SearchFilters {
